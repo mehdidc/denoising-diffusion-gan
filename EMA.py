@@ -21,8 +21,16 @@ class EMA(Optimizer):
         self.optimizer = opt
         self.state = opt.state
         self.param_groups = opt.param_groups
+        self.defaults = {}
 
     def step(self, *args, **kwargs):
+        # for group in self.optimizer.param_groups:
+            # group.setdefault('amsgrad', False)
+            # group.setdefault('maximize', False)
+            # group.setdefault('foreach', None)
+            # group.setdefault('capturable', False)
+            # group.setdefault('differentiable', False)
+            # group.setdefault('fused', False)
         retval = self.optimizer.step(*args, **kwargs)
 
         # stop here if we are not applying EMA

@@ -181,7 +181,7 @@ class SmallCondAttnDiscriminator(nn.Module):
         hidden_dim=t_emb_dim,
         output_dim=t_emb_dim,
         act=act,
-        )
+    )
     
     
      
@@ -368,7 +368,7 @@ class CondAttnDiscriminator(nn.Module):
             hidden_dim=t_emb_dim,
             output_dim=t_emb_dim,
             act=act,
-        )
+    )
       
     self.start_conv = conv2d(nc,ngf*2,1, padding=0)
     self.conv1 = DownConvBlock(ngf*2, ngf*4, t_emb_dim = t_emb_dim, downsample = True, act=act)

@@ -384,15 +384,20 @@ def sample_and_test(args):
     for epoch in epochs:
         args.epoch_id = epoch
         path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(args.dataset, args.exp, args.epoch_id)
-        next_path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(args.dataset, args.exp, args.epoch_id+1)
+        next_next_path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(args.dataset, args.exp, args.epoch_id+2)
         if not os.path.exists(path):
             continue
+        if not os.path.exists(next_next_path):
+            break
         print(path)
 
         #if not os.path.exists(next_path):
         #    print(f"STOP at {epoch}")
         #    break
-        ckpt = torch.load(path, map_location=device)
+        try:
+            ckpt = torch.load(path, map_location=device)
+        except Exception:
+            continue
         suffix = '_' + args.eval_name if args.eval_name else ""
         dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(args.dataset, args.exp, args.epoch_id, suffix)
         next_dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(args.dataset, args.exp, args.epoch_id+1, suffix)

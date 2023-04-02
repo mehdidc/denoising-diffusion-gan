@@ -256,6 +256,28 @@ def ddgan_ddb_v3():
     cfg['model']['num_timesteps'] = 2
     return cfg
 
+def ddgan_ddb_v4():
+    cfg = ddgan_ddb_v1()
+    cfg['model']['num_channels_dae'] = 256
+    cfg['model']['num_timesteps'] = 2
+    return cfg
+
+def ddgan_ddb_v5():
+    cfg = ddgan_ddb_v2()
+    return cfg
+
+def ddgan_ddb_v6():
+    cfg = ddgan_ddb_v3()
+    return cfg
+
+def ddgan_ddb_v7():
+    cfg = ddgan_ddb_v1()
+    return cfg
+
+def ddgan_laion_aesthetic_v15():
+    cfg = ddgan_ddb_v3()
+    return cfg
+
 models = [
     ddgan_cifar10_cond17, # cifar10, cross attn for discr
     ddgan_cifar10_cond18, # cifar10, xl encoder
@@ -283,6 +305,7 @@ models = [
     ddgan_laion_aesthetic_v12,
     ddgan_laion_aesthetic_v13,
     ddgan_laion_aesthetic_v14,
+    ddgan_laion_aesthetic_v15,
     ddgan_laion2b_v1,
     ddgan_sd_v1,
     ddgan_sd_v2,
@@ -298,7 +321,11 @@ models = [
     ddgan_laion2b_v2,
     ddgan_ddb_v1,
     ddgan_ddb_v2,
-    ddgan_ddb_v3
+    ddgan_ddb_v3,
+    ddgan_ddb_v4,
+    ddgan_ddb_v5,
+    ddgan_ddb_v6,
+    ddgan_ddb_v7,
 ]
 
 def get_model(model_name):

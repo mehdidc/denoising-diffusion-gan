@@ -210,6 +210,7 @@ def get_autocast(precision):
 
 def train(rank, gpu, args):
     from score_sde.models.discriminator import Discriminator_small, Discriminator_large, CondAttnDiscriminator, SmallCondAttnDiscriminator
+    from score_sde.models.projected_discriminator import ProjectedDiscriminator
     from score_sde.models.ncsnpp_generator_adagn import NCSNpp
     from EMA import EMA
     
@@ -281,6 +282,12 @@ def train(rank, gpu, args):
                     transforms.ToTensor(),
                     transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
             ])
+        elif args.preprocessing == "simple_random_crop":
+            train_transform = transforms.Compose([
+                    transforms.RandomCrop(args.image_size, interpolation=3),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
+            ])
         shards = glob(os.path.join(args.dataset_root, "*.tar")) if os.path.isdir(args.dataset_root)  else args.dataset_root
         pipeline = [ResampledShards2(shards)]
         pipeline.extend([
@@ -295,7 +302,7 @@ def train(rank, gpu, args):
         pipeline.extend([
             wds.select(filter_no_caption),
             wds.decode("pilrgb", handler=log_and_continue),
-            wds.rename(image="jpg;png"),
+            wds.rename(image="jpg;png;webp"),
             wds.map_dict(image=train_transform),
             wds.to_tuple("image","txt"),
             wds.batched(batch_size, partial=False),
@@ -361,7 +368,13 @@ def train(rank, gpu, args):
             t_emb_dim = args.t_emb_dim,
             cond_size=text_encoder.output_size,
             act=nn.LeakyReLU(0.2)).to(device)
-
+    elif args.discr_type == "projected_gan":
+        netD = ProjectedDiscriminator(
+            num_discs=4,
+            backbone_kwargs={"cond_size": text_encoder.output_size}
+        )
+        netD = netD.to(device)
+        
     broadcast_params(netG.parameters())
     broadcast_params(netD.parameters())
     
@@ -387,7 +400,10 @@ def train(rank, gpu, args):
         netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
     else:
         netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
-        netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
+        netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu], find_unused_parameters=args.discr_type=="projected_gan")
+        #if args.discr_type == "projected_gan":
+        #    netD._set_static_graph()
+
     
     if args.grad_checkpointing:
         from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
@@ -430,7 +446,7 @@ def train(rank, gpu, args):
                   .format(checkpoint['epoch']))
     else:
         global_step, epoch, init_epoch = 0, 0, 0
-    use_cond_attn_discr = args.discr_type in ("large_cond_attn", "small_cond_attn", "large_attn_pool")
+    use_cond_attn_discr = args.discr_type in ("large_cond_attn", "small_cond_attn", "large_attn_pool", "projected_gan")
     for epoch in range(init_epoch, args.num_epoch+1):
         if args.dataset == "wds":
             os.environ["WDS_EPOCH"] = str(epoch)

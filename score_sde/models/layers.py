@@ -559,6 +559,7 @@ class CondAttnBlock(nn.Module):
     h = h.permute(0,2,1)
     h = h.contiguous()
     h_new = self.ca(h, cond, mask=mask)
+    # print(h_new.min(), h_new.max())
     h_new = h_new.permute(0,2,1)
     h_new = h_new.contiguous()
     h_new = h_new.view(B, C, H, W)
