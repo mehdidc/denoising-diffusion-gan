@@ -15,13 +15,14 @@ from torch.optim import Optimizer
 
 
 class EMA(Optimizer):
-    def __init__(self, opt, ema_decay):
+    def __init__(self, opt, ema_decay, memory_efficient=False):
         self.ema_decay = ema_decay
         self.apply_ema = self.ema_decay > 0.
         self.optimizer = opt
         self.state = opt.state
         self.param_groups = opt.param_groups
         self.defaults = {}
+        self.memory_efficient = memory_efficient
 
     def step(self, *args, **kwargs):
         # for group in self.optimizer.param_groups:
@@ -53,11 +54,19 @@ class EMA(Optimizer):
 
                 params[p.shape]['data'].append(p.data)
                 ema[p.shape].append(state['ema'])
+            
+            # def stack(d, dim=0):
+                # return torch.stack([di.cpu() for di in d], dim=dim).cuda()
 
             for i in params:
-                params[i]['data'] = torch.stack(params[i]['data'], dim=0)
-                ema[i] = torch.stack(ema[i], dim=0)
-                ema[i].mul_(self.ema_decay).add_(params[i]['data'], alpha=1. - self.ema_decay)
+                if self.memory_efficient:
+                    for j in range(len(params[i]['data'])):
+                        ema[i][j].mul_(self.ema_decay).add_(params[i]['data'][j], alpha=1. - self.ema_decay)
+                    ema[i] = torch.stack(ema[i], dim=0)
+                else:
+                    params[i]['data'] = torch.stack(params[i]['data'], dim=0)
+                    ema[i] = torch.stack(ema[i], dim=0)
+                    ema[i].mul_(self.ema_decay).add_(params[i]['data'], alpha=1. - self.ema_decay)
 
             for p in group['params']:
                 if p.grad is None:

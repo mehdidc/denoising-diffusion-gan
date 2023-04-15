@@ -380,7 +380,11 @@ def sample_and_test(args):
         epochs = range(1000)
     else:
         epochs = [args.epoch_id]
-    
+    if args.compute_image_reward:
+        import ImageReward as RM
+        #image_reward = RM.load("ImageReward-v1.0", download_root=".").to(device)
+        image_reward = RM.load("ImageReward.pt", download_root=".").to(device)
+
     for epoch in epochs:
         args.epoch_id = epoch
         path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(args.dataset, args.exp, args.epoch_id)
@@ -389,7 +393,7 @@ def sample_and_test(args):
             continue
         if not os.path.exists(next_next_path):
             break
-        print(path)
+        print("PATH", path)
 
         #if not os.path.exists(next_path):
         #    print(f"STOP at {epoch}")
@@ -400,9 +404,7 @@ def sample_and_test(args):
             continue
         suffix = '_' + args.eval_name if args.eval_name else ""
         dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(args.dataset, args.exp, args.epoch_id, suffix)
-        next_dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(args.dataset, args.exp, args.epoch_id+1, suffix)
-
-        if (args.compute_fid or args.compute_clip_score) and  os.path.exists(dest):
+        if (args.compute_fid or args.compute_clip_score or args.compute_image_reward) and  os.path.exists(dest):
             continue
         print("Eval Epoch", args.epoch_id)
         #loading weights from ddp in single gpu
@@ -424,7 +426,8 @@ def sample_and_test(args):
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         
-        if args.compute_fid or args.compute_clip_score:
+
+        if args.compute_fid or args.compute_clip_score or args.compute_image_reward:
             from torch.nn.functional import adaptive_avg_pool2d
             from pytorch_fid.fid_score import calculate_activation_statistics, calculate_fid_given_paths, ImagePathDataset, compute_statistics_of_path, calculate_frechet_distance
             from pytorch_fid.inception import InceptionV3
@@ -472,6 +475,8 @@ def sample_and_test(args):
             
             if args.compute_clip_score:
                 clip_scores = []
+            if args.compute_image_reward:
+                image_rewards = []
             
             for b in range(0, len(texts), args.batch_size):
                 text = texts[b:b+args.batch_size]
@@ -485,12 +490,7 @@ def sample_and_test(args):
                     else:
                         fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, cond=cond)
                     fake_sample = to_range_0_1(fake_sample)
-                    """
-                    for j, x in enumerate(fake_sample):
-                        index = i * args.batch_size + j 
-                        torchvision.utils.save_image(x, './generated_samples/{}/{}.jpg'.format(args.dataset, index))
-                    """
-
+               
                     if args.compute_fid:
                         with torch.no_grad():
                             pred = inceptionv3(fake_sample)[0]
@@ -511,9 +511,18 @@ def sample_and_test(args):
                             imf = torch.nn.functional.normalize(imf, dim=1)
                             txtf = torch.nn.functional.normalize(txtf, dim=1)
                             clip_scores.append(((imf * txtf).sum(dim=1)).cpu())
-                    
+
+                    if args.compute_image_reward:
+                        for k, sample in enumerate(fake_sample):
+                            img = sample.cpu().numpy().transpose(1,2,0)
+                            img = img * 255
+                            img = img.astype(np.uint8)
+                            text_k = text[k]
+                            score = image_reward.score(text_k, img)
+                            image_rewards.append(score)
                     if i % 10 == 0:
                         print('evaluating batch ', i, time.time() - t0)
+                    #break
                 i += 1
 
             results = {}
@@ -526,6 +535,9 @@ def sample_and_test(args):
             if args.compute_clip_score:
                 clip_score = torch.cat(clip_scores).mean().item()
                 results['clip_score'] = clip_score
+            if args.compute_image_reward:
+                reward = np.mean(image_rewards)
+                results['image_reward'] = reward
             results.update(vars(args))
             with open(dest, "w") as fd:
                 json.dump(results, fd)
@@ -591,6 +603,9 @@ if __name__ == '__main__':
                             help='whether or not compute FID')
     parser.add_argument('--compute_clip_score', action='store_true', default=False,
                             help='whether or not compute CLIP score')
+    parser.add_argument('--compute_image_reward', action='store_true', default=False,
+                            help='whether or not compute CLIP score')
+
     parser.add_argument('--clip_model', type=str,default="ViT-L/14")
     parser.add_argument('--eval_name', type=str,default="")
 
@@ -625,7 +640,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--num_res_blocks', type=int, default=2,
                             help='number of resnet blocks per scale')
-    parser.add_argument('--attn_resolutions', default=(16,),
+    parser.add_argument('--attn_resolutions', default=(16,), nargs='+', type=int,
                             help='resolution of applying attention')
     parser.add_argument('--dropout', type=float, default=0.,
                             help='drop-out rate')

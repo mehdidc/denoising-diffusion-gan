@@ -4,14 +4,14 @@
 # This work is licensed under the NVIDIA Source Code License
 # for Denoising Diffusion GAN. To view a copy of this license, see the LICENSE file.
 # ---------------------------------------------------------------
+import torch
 
 from glob import glob
 import argparse
-import torch
 import numpy as np
-
+import json
 import os
-
+import time
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -288,6 +288,15 @@ def train(rank, gpu, args):
                     transforms.ToTensor(),
                     transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
             ])
+        elif args.preprocessing == "simple_random_crop_v2":
+            train_transform = transforms.Compose([
+                    transforms.Resize(args.image_size),
+                    transforms.RandomCrop(args.image_size, interpolation=3),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))
+            ])
+        else:
+            raise ValueError(args.preprocessing)
         shards = glob(os.path.join(args.dataset_root, "*.tar")) if os.path.isdir(args.dataset_root)  else args.dataset_root
         pipeline = [ResampledShards2(shards)]
         pipeline.extend([
@@ -312,7 +321,7 @@ def train(rank, gpu, args):
             dataset,
             batch_size=None,
             shuffle=False,
-            num_workers=8,
+            num_workers=1,
         )
     
     if args.dataset != "wds":
@@ -355,6 +364,7 @@ def train(rank, gpu, args):
                                 cond_size=text_encoder.output_size,
                                 act=nn.LeakyReLU(0.2)).to(device)
     elif args.discr_type == "large_attn_pool":
+        # Discriminator with  Attention Pool based discriminator for text conditioning
         netD = Discriminator_large(nc = 2*args.num_channels, ngf = args.ngf, 
                                 t_emb_dim = args.t_emb_dim,
                                 cond_size=text_encoder.output_size,
@@ -362,6 +372,7 @@ def train(rank, gpu, args):
                                 act=nn.LeakyReLU(0.2)).to(device)
 
     elif args.discr_type == "large_cond_attn":
+        # Discriminator with  Cross-Attention based discriminator for text conditioning
         netD = CondAttnDiscriminator(
             nc = 2*args.num_channels, 
             ngf = args.ngf, 
@@ -391,7 +402,7 @@ def train(rank, gpu, args):
     optimizerG = optim.Adam(netG.parameters(), lr=args.lr_g, betas = (args.beta1, args.beta2))
     
     if args.use_ema:
-        optimizerG = EMA(optimizerG, ema_decay=args.ema_decay)
+        optimizerG = EMA(optimizerG, ema_decay=args.ema_decay, memory_efficient=args.grad_checkpointing)
     
     schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(optimizerG, args.num_epoch, eta_min=1e-5)
     schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(optimizerD, args.num_epoch, eta_min=1e-5)
@@ -403,12 +414,10 @@ def train(rank, gpu, args):
         netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu], find_unused_parameters=args.discr_type=="projected_gan")
         #if args.discr_type == "projected_gan":
         #    netD._set_static_graph()
-
     
-    if args.grad_checkpointing:
-        from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
-        netG = checkpoint_wrapper(netG)
-
+    #if args.grad_checkpointing:
+        #from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
+        #netG = checkpoint_wrapper(netG)
     exp = args.exp
     parent_dir = "./saved_info/dd_gan/{}".format(args.dataset)
 
@@ -442,8 +451,9 @@ def train(rank, gpu, args):
         optimizerD.load_state_dict(checkpoint['optimizerD'])
         schedulerD.load_state_dict(checkpoint['schedulerD'])
         global_step = checkpoint['global_step']
-        print("=> loaded checkpoint (epoch {})"
-                  .format(checkpoint['epoch']))
+        if rank == 0:
+            print("=> loaded checkpoint (epoch {})"
+                      .format(checkpoint['epoch']))
     else:
         global_step, epoch, init_epoch = 0, 0, 0
     use_cond_attn_discr = args.discr_type in ("large_cond_attn", "small_cond_attn", "large_attn_pool", "projected_gan")
@@ -454,6 +464,7 @@ def train(rank, gpu, args):
             train_sampler.set_epoch(epoch)
        
         for iteration, (x, y) in enumerate(data_loader):
+            t0 = time.time()
             #print(x.shape)
             if args.dataset != "wds":
                 y = [str(yi) for yi in y.tolist()]
@@ -631,6 +642,8 @@ def train(rank, gpu, args):
                 if rank == 0:
                     print('epoch {} iteration{}, G Loss: {}, D Loss: {}'.format(epoch,iteration, errG.item(), errD.item()))
                     print('Global step:', global_step)
+                    dt = time.time() - t0
+                    print('Time per iteration: ', dt)
             if iteration % 1000 == 0:
                 x_t_1 = torch.randn_like(real_data)
                 with autocast():
@@ -640,7 +653,8 @@ def train(rank, gpu, args):
                 
                 if args.save_content:
                     dist.barrier()
-                    print('Saving content.')
+                    if rank == 0:
+                        print('Saving content.')
                     def to_cpu(d):
                         for k, v in d.items():
                             d[k] = v.cpu()
@@ -677,6 +691,9 @@ def train(rank, gpu, args):
                                     'optimizerD': optimizerD.state_dict(), 'schedulerD': schedulerD.state_dict()}                    
                             torch.save(content, os.path.join(exp_path, 'content.pth'))
                             torch.save(content, os.path.join(exp_path, 'content_backup.pth'))
+                            state_content = {'epoch': epoch + 1, 'global_step': global_step}
+                            with open(os.path.join(exp_path, 'netG_{}.json'.format(epoch)), "w") as fd:
+                                fd.write(json.dumps(state_content))
                             if args.use_ema:
                                 optimizerG.swap_parameters_with_ema(store_params_in_ema=True)                        
                             torch.save(netG.state_dict(), os.path.join(exp_path, 'netG_{}.pth'.format(epoch)))
@@ -685,40 +702,8 @@ def train(rank, gpu, args):
 
             
         if not args.no_lr_decay:
-            
             schedulerG.step()
             schedulerD.step()
-        """
-        if rank == 0:
-            if epoch % 10 == 0:
-                torchvision.utils.save_image(x_pos_sample, os.path.join(exp_path, 'xpos_epoch_{}.png'.format(epoch)), normalize=True)
-            
-            x_t_1 = torch.randn_like(real_data)
-            with autocast():
-                fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1, T, args, cond=(cond_pooled, cond, cond_mask))
-            torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'sample_discrete_epoch_{}.png'.format(epoch)), normalize=True)
-            
-            if args.save_content:
-                if epoch % args.save_content_every == 0:
-                    print('Saving content.')
-                    content = {'epoch': epoch + 1, 'global_step': global_step, 'args': args,
-                               'netG_dict': netG.state_dict(), 'optimizerG': optimizerG.state_dict(),
-                               'schedulerG': schedulerG.state_dict(), 'netD_dict': netD.state_dict(),
-                               'optimizerD': optimizerD.state_dict(), 'schedulerD': schedulerD.state_dict()}
-                    
-                    torch.save(content, os.path.join(exp_path, 'content.pth'))
-                    torch.save(content, os.path.join(exp_path, 'content_backup.pth'))
-                
-            if epoch % args.save_ckpt_every == 0:
-                if args.use_ema:
-                    optimizerG.swap_parameters_with_ema(store_params_in_ema=True)
-                    
-                torch.save(netG.state_dict(), os.path.join(exp_path, 'netG_{}.pth'.format(epoch)))
-                if args.use_ema:
-                    optimizerG.swap_parameters_with_ema(store_params_in_ema=True)
-        dist.barrier()
-        """
-
 
 def init_processes(rank, size, fn, args):
     """ Initialize the distributed environment. """
@@ -748,12 +733,12 @@ if __name__ == '__main__':
                         help='seed used for initialization')
     
     parser.add_argument('--resume', action='store_true',default=False)
-    parser.add_argument('--masked_mean', action='store_true',default=False)
-    parser.add_argument('--mismatch_loss', action='store_true',default=False)
+    parser.add_argument('--masked_mean', action='store_true',default=False, help="use masked mean to pool from t5-based text encoder")
+    parser.add_argument('--mismatch_loss', action='store_true',default=False, help="use mismatch loss")
     parser.add_argument('--text_encoder', type=str, default="google/t5-v1_1-base")
-    parser.add_argument('--cross_attention', action='store_true',default=False)
-    parser.add_argument('--fsdp', action='store_true',default=False)
-    parser.add_argument('--grad_checkpointing', action='store_true',default=False)
+    parser.add_argument('--cross_attention', action='store_true',default=False, help="use cross attention in generator")
+    parser.add_argument('--fsdp', action='store_true',default=False, help='use FSDP')
+    parser.add_argument('--grad_checkpointing', action='store_true',default=False, help='use grad checkpointing')
 
     parser.add_argument('--image_size', type=int, default=32,
                             help='size of image')
@@ -767,9 +752,8 @@ if __name__ == '__main__':
     parser.add_argument('--beta_max', type=float, default=20.,
                             help='beta_max for diffusion')
     parser.add_argument('--classifier_free_guidance_proba', type=float, default=0.0)
-    
     parser.add_argument('--num_channels_dae', type=int, default=128,
-                            help='number of initial channels in denosing model')
+                            help='number of initial channels in denosing model generator')
     parser.add_argument('--n_mlp', type=int, default=3,
                             help='number of mlp layers for z')
     parser.add_argument('--ch_mult', nargs='+', type=int,
@@ -825,7 +809,7 @@ if __name__ == '__main__':
     parser.add_argument('--beta2', type=float, default=0.9,
                             help='beta2 for adam')
     parser.add_argument('--no_lr_decay',action='store_true', default=False)
-    parser.add_argument('--grad_penalty_cond', action='store_true',default=False)
+    parser.add_argument('--grad_penalty_cond', action='store_true',default=False, help="cond based grad penalty")
 
     parser.add_argument('--use_ema', action='store_true', default=False,
                             help='use EMA or not')

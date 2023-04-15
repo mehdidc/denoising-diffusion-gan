@@ -37,6 +37,11 @@ import functools
 import torch
 import numpy as np
 
+try:
+  from fairscale.nn.checkpoint import checkpoint_wrapper
+except Exception:
+  checkpoint_wrapper = lambda x:x
+
 
 ResnetBlockDDPM = layerspp.ResnetBlockDDPMpp_Adagn
 ResnetBlockBigGAN = layerspp.ResnetBlockBigGANpp_Adagn
@@ -63,6 +68,7 @@ class NCSNpp(nn.Module):
   def __init__(self, config):
     super().__init__()
     self.config = config
+    self.grad_checkpointing = config.grad_checkpointing if hasattr(config, "grad_checkpointing") else False
     self.not_use_tanh = config.not_use_tanh
     self.act = act = nn.SiLU()
     self.z_emb_dim = z_emb_dim = config.z_emb_dim
@@ -176,6 +182,8 @@ class NCSNpp(nn.Module):
       raise ValueError(f'resblock type {resblock_type} unrecognized.')
 
     # Downsampling block
+    def wrap(block):
+      return checkpoint_wrapper(block) if self.grad_checkpointing else block
 
     channels = config.num_channels
     if progressive_input != 'none':
@@ -189,18 +197,18 @@ class NCSNpp(nn.Module):
       # Residual blocks for this resolution
       for i_block in range(num_res_blocks):
         out_ch = nf * ch_mult[i_level]
-        modules.append(ResnetBlock(in_ch=in_ch, out_ch=out_ch))
+        modules.append(wrap(ResnetBlock(in_ch=in_ch, out_ch=out_ch)))
         in_ch = out_ch
 
         if all_resolutions[i_level] in attn_resolutions:
-          modules.append(AttnBlock(channels=in_ch))
+          modules.append(wrap(AttnBlock(channels=in_ch)))
         hs_c.append(in_ch)
 
       if i_level != num_resolutions - 1:
         if resblock_type == 'ddpm':
           modules.append(Downsample(in_ch=in_ch))
         else:
-          modules.append(ResnetBlock(down=True, in_ch=in_ch))
+          modules.append(wrap(ResnetBlock(down=True, in_ch=in_ch)))
 
         if progressive_input == 'input_skip':
           modules.append(combiner(dim1=input_pyramid_ch, dim2=in_ch))
@@ -214,21 +222,21 @@ class NCSNpp(nn.Module):
         hs_c.append(in_ch)
 
     in_ch = hs_c[-1]
-    modules.append(ResnetBlock(in_ch=in_ch))
-    modules.append(AttnBlock(channels=in_ch))
-    modules.append(ResnetBlock(in_ch=in_ch))
+    modules.append(wrap(ResnetBlock(in_ch=in_ch)))
+    modules.append(wrap(AttnBlock(channels=in_ch)))
+    modules.append(wrap(ResnetBlock(in_ch=in_ch)))
 
     pyramid_ch = 0
     # Upsampling block
     for i_level in reversed(range(num_resolutions)):
       for i_block in range(num_res_blocks + 1):
         out_ch = nf * ch_mult[i_level]
-        modules.append(ResnetBlock(in_ch=in_ch + hs_c.pop(),
-                                   out_ch=out_ch))
+        modules.append(wrap(ResnetBlock(in_ch=in_ch + hs_c.pop(),
+                                   out_ch=out_ch)))
         in_ch = out_ch
 
       if all_resolutions[i_level] in attn_resolutions:
-        modules.append(AttnBlock(channels=in_ch))
+        modules.append(wrap(AttnBlock(channels=in_ch)))
 
       if progressive != 'none':
         if i_level == num_resolutions - 1:
@@ -260,7 +268,7 @@ class NCSNpp(nn.Module):
         if resblock_type == 'ddpm':
           modules.append(Upsample(in_ch=in_ch))
         else:
-          modules.append(ResnetBlock(in_ch=in_ch, up=True))
+          modules.append(wrap(ResnetBlock(in_ch=in_ch, up=True)))
 
     assert not hs_c
 

@@ -274,9 +274,29 @@ def ddgan_ddb_v7():
     cfg = ddgan_ddb_v1()
     return cfg
 
+def ddgan_ddb_v9():
+    cfg = ddgan_ddb_v3()
+    cfg['model']['attn_resolutions'] = '4 8 16 32'
+    return cfg
+
 def ddgan_laion_aesthetic_v15():
     cfg = ddgan_ddb_v3()
     return cfg
+
+def ddgan_ddb_v10():
+    cfg = ddgan_ddb_v9()
+    return cfg
+
+def ddgan_ddb_v11():
+    cfg = ddgan_ddb_v3()
+    cfg['model']['text_encoder'] = "openclip/ViT-g-14/laion2B-s12B-b42K" 
+    return cfg
+
+def ddgan_ddb_v12():
+    cfg = ddgan_ddb_v3()
+    cfg['model']['text_encoder'] = "openclip/ViT-bigG-14/laion2b_s39b_b160k"
+    return cfg
+
 
 models = [
     ddgan_cifar10_cond17, # cifar10, cross attn for discr
@@ -326,6 +346,10 @@ models = [
     ddgan_ddb_v5,
     ddgan_ddb_v6,
     ddgan_ddb_v7,
+    ddgan_ddb_v9,
+    ddgan_ddb_v10,
+    ddgan_ddb_v11,
+    ddgan_ddb_v12,
 ]
 
 def get_model(model_name):
@@ -334,7 +358,7 @@ def get_model(model_name):
             return model()
 
 
-def test(model_name, *, cond_text="", batch_size:int=None, epoch:int=None, guidance_scale:float=0, fid=False, real_img_dir="", q=0.0, seed=0, nb_images_for_fid=0, scale_factor_h=1, scale_factor_w=1, compute_clip_score=False, eval_name="", scale_method="convolutional"):
+def test(model_name, *, cond_text="", batch_size:int=None, epoch:int=None, guidance_scale:float=0, fid=False, real_img_dir="", q=0.0, seed=0, nb_images_for_fid=0, scale_factor_h=1, scale_factor_w=1, compute_clip_score=False, eval_name="", scale_method="convolutional", compute_image_reward=False):
 
     cfg = get_model(model_name)
     model = cfg['model']
@@ -365,12 +389,16 @@ def test(model_name, *, cond_text="", batch_size:int=None, epoch:int=None, guida
     args['scale_factor_w'] = scale_factor_w
     args['n_mlp'] = model.get("n_mlp")
     args['scale_method'] = scale_method
+    args['attn_resolutions'] = model.get("attn_resolutions", "16")
     if fid:
         args['compute_fid'] = ''
         args['real_img_dir'] = real_img_dir 
         args['nb_images_for_fid'] = nb_images_for_fid
     if compute_clip_score:
         args['compute_clip_score'] = ""
+    
+    if compute_image_reward:
+        args['compute_image_reward'] = ""
     if eval_name:
         args["eval_name"] = eval_name
     cmd = "python -u test_ddgan.py " + " ".join(f"--{k} {v}" for k, v in args.items() if v is not None)
