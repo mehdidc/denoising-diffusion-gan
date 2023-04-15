@@ -385,9 +385,10 @@ def train(rank, gpu, args):
             backbone_kwargs={"cond_size": text_encoder.output_size}
         )
         netD = netD.to(device)
-        
-    broadcast_params(netG.parameters())
-    broadcast_params(netD.parameters())
+
+    if args.world_size > 1:    
+        broadcast_params(netG.parameters())
+        broadcast_params(netD.parameters())
     
     if args.fsdp:
         from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
@@ -410,8 +411,9 @@ def train(rank, gpu, args):
     if args.fsdp:   
         netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu])
     else:
-        netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
-        netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu], find_unused_parameters=args.discr_type=="projected_gan")
+        if args.world_size > 1:
+            netG = nn.parallel.DistributedDataParallel(netG, device_ids=[gpu])
+            netD = nn.parallel.DistributedDataParallel(netD, device_ids=[gpu], find_unused_parameters=args.discr_type=="projected_gan")
         #if args.discr_type == "projected_gan":
         #    netD._set_static_graph()
     
@@ -652,7 +654,8 @@ def train(rank, gpu, args):
                     torchvision.utils.save_image(fake_sample, os.path.join(exp_path, 'sample_discrete_epoch_{}_iteration_{}.png'.format(epoch, iteration)), normalize=True)
                 
                 if args.save_content:
-                    dist.barrier()
+                    if args.world_size > 1:
+                        dist.barrier()
                     if rank == 0:
                         print('Saving content.')
                     def to_cpu(d):
@@ -709,20 +712,26 @@ def init_processes(rank, size, fn, args):
     """ Initialize the distributed environment. """
 
     import os
-
-    args.rank = int(os.environ['SLURM_PROCID'])
-    args.world_size =  int(os.getenv("SLURM_NTASKS"))
-    args.local_rank = int(os.environ['SLURM_LOCALID'])
-    print(args.rank, args.world_size)
-    args.master_address = os.getenv("SLURM_LAUNCH_NODE_IPADDR")
-    os.environ['MASTER_ADDR'] = args.master_address
-    os.environ['MASTER_PORT'] = "12345"
-    torch.cuda.set_device(args.local_rank)
-    gpu = args.local_rank
-    dist.init_process_group(backend='nccl', init_method='env://', rank=rank, world_size=args.world_size)
-    fn(rank, gpu, args)
-    dist.barrier()
-    cleanup()  
+    
+    if size == 1:
+        args.rank = 0
+        args.world_size = 1
+        args.local_rank = 0
+        fn(rank,args.local_rank, args)
+    else:
+        args.rank = int(os.environ['SLURM_PROCID'])
+        args.world_size =  int(os.getenv("SLURM_NTASKS"))
+        args.local_rank = int(os.environ['SLURM_LOCALID'])
+        print(args.rank, args.world_size)
+        args.master_address = os.getenv("SLURM_LAUNCH_NODE_IPADDR")
+        os.environ['MASTER_ADDR'] = args.master_address
+        os.environ['MASTER_PORT'] = "12345"
+        torch.cuda.set_device(args.local_rank)
+        gpu = args.local_rank
+        dist.init_process_group(backend='nccl', init_method='env://', rank=rank, world_size=args.world_size)
+        fn(rank, gpu, args)
+        dist.barrier()
+        cleanup()  
 
 def cleanup():
     dist.destroy_process_group()    
@@ -737,6 +746,8 @@ if __name__ == '__main__':
     parser.add_argument('--mismatch_loss', action='store_true',default=False, help="use mismatch loss")
     parser.add_argument('--text_encoder', type=str, default="google/t5-v1_1-base")
     parser.add_argument('--cross_attention', action='store_true',default=False, help="use cross attention in generator")
+    parser.add_argument('--cross_attention_block',  default="basic", help="cross attention block type")
+
     parser.add_argument('--fsdp', action='store_true',default=False, help='use FSDP')
     parser.add_argument('--grad_checkpointing', action='store_true',default=False, help='use grad checkpointing')
 
@@ -809,7 +820,7 @@ if __name__ == '__main__':
     parser.add_argument('--beta2', type=float, default=0.9,
                             help='beta2 for adam')
     parser.add_argument('--no_lr_decay',action='store_true', default=False)
-    parser.add_argument('--grad_penalty_cond', action='store_true',default=False, help="cond based grad penalty")
+    parser.add_argument('--grad_penalty_cond', action='store_true',default=False, help="cond based grad")
 
     parser.add_argument('--use_ema', action='store_true', default=False,
                             help='use EMA or not')
@@ -828,6 +839,7 @@ if __name__ == '__main__':
     parser.add_argument('--precision', type=str, default="fp32")
 
     ###ddp
+
     parser.add_argument('--num_proc_node', type=int, default=1,
                         help='The number of nodes in multi node env.')
     parser.add_argument('--num_process_per_node', type=int, default=1,
@@ -840,8 +852,10 @@ if __name__ == '__main__':
                         help='address for master')
 
     args = parser.parse_args()
-    # args.world_size = args.num_proc_node * args.num_process_per_node
-    args.world_size =  int(os.getenv("SLURM_NTASKS"))
-    args.rank = int(os.environ['SLURM_PROCID'])
-    # size = args.num_process_per_node
+    if 'SLURM_NTASKS' in os.environ:
+        args.world_size =  int(os.getenv("SLURM_NTASKS"))
+        args.rank = int(os.environ['SLURM_PROCID'])
+    else:
+        args.world_size = 1
+        args.rank = 0
     init_processes(args.rank, args.world_size, train, args)

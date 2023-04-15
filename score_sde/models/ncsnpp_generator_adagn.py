@@ -53,6 +53,36 @@ get_act = layers.get_act
 default_initializer = layers.default_init
 dense = dense_layer.dense
 
+class CrossAndGlobalAttnBlock(nn.Module):
+  """Channel-wise self-attention block."""
+  def __init__(self, channels, *, context_dim=None, dim_head=64, heads=8, norm_context=False, cosine_sim_attn=False):
+    super().__init__()
+    self.GroupNorm_0 = nn.GroupNorm(num_groups=32, num_channels=channels, eps=1e-6)
+    self.ca = layers.CrossAttention(
+      channels,
+      context_dim=context_dim,
+      dim_head=dim_head,
+      heads=heads,
+      norm_context=norm_context,
+      cosine_sim_attn=cosine_sim_attn,
+    )
+    self.attn = layerspp.AttnBlockppRaw(channels)
+  
+  def forward(self, x, cond, mask=None):
+    B, C, H, W = x.shape
+    h = self.GroupNorm_0(x)
+    h = h.view(B, C, H*W)
+    h = h.permute(0,2,1)
+    h = h.contiguous()
+    h_new = self.ca(h, cond, mask=mask)
+    h_new = h_new.permute(0,2,1)
+    h_new = h_new.contiguous()
+    h_new = h_new.view(B, C, H, W)
+
+    h_global = self.attn(x)
+    h = h_new + h_global
+    return x + h
+
 class PixelNorm(nn.Module):
     def __init__(self):
         super().__init__()
@@ -68,6 +98,7 @@ class NCSNpp(nn.Module):
   def __init__(self, config):
     super().__init__()
     self.config = config
+    self.cross_attention_block = config.cross_attention_block
     self.grad_checkpointing = config.grad_checkpointing if hasattr(config, "grad_checkpointing") else False
     self.not_use_tanh = config.not_use_tanh
     self.act = act = nn.SiLU()
@@ -124,7 +155,14 @@ class NCSNpp(nn.Module):
       modules[-1].weight.data = default_initializer()(modules[-1].weight.shape)
       nn.init.zeros_(modules[-1].bias)
     if config.cross_attention:
-      AttnBlock = functools.partial(layers.CondAttnBlock, context_dim=config.cond_size)
+
+      #block_name = config.cross_attention_block if hasattr(config, "cross_attention_block") else "basic"
+      block_name = config.cross_attention_block
+      if block_name == "basic":
+        AttnBlock = functools.partial(layers.CondAttnBlock, context_dim=config.cond_size)
+      elif block_name == "cross_and_global_attention":
+        AttnBlock = functools.partial(CrossAndGlobalAttnBlock, context_dim=config.cond_size)
+      print(AttnBlock)
     else:
       AttnBlock = functools.partial(layerspp.AttnBlockpp,
                                     init_scale=init_scale,
@@ -342,7 +380,7 @@ class NCSNpp(nn.Module):
         h = modules[m_idx](hs[-1], temb, zemb)
         m_idx += 1
         if h.shape[-1] in self.attn_resolutions:
-          if type(modules[m_idx]) == layers.CondAttnBlock:
+          if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock):
             h = modules[m_idx](h, cond, cond_mask)
           else:
             h = modules[m_idx](h)
@@ -377,7 +415,7 @@ class NCSNpp(nn.Module):
     h = hs[-1]
     h = modules[m_idx](h, temb, zemb)
     m_idx += 1
-    if type(modules[m_idx]) == layers.CondAttnBlock:
+    if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock):
       h = modules[m_idx](h, cond, cond_mask)
     else:
       h = modules[m_idx](h)
@@ -394,7 +432,7 @@ class NCSNpp(nn.Module):
         m_idx += 1
 
       if h.shape[-1] in self.attn_resolutions:
-        if type(modules[m_idx]) == layers.CondAttnBlock:
+        if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock):
           h = modules[m_idx](h, cond, cond_mask)
         else:
           h = modules[m_idx](h)

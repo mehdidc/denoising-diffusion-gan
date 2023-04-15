@@ -123,6 +123,34 @@ class AttnBlockpp(nn.Module):
     else:
       return (x + h) / np.sqrt(2.)
 
+class AttnBlockppRaw(nn.Module):
+  """Channel-wise self-attention block. Modified from DDPM."""
+
+  def __init__(self, channels, skip_rescale=False, init_scale=0.):
+    super().__init__()
+    self.GroupNorm_0 = nn.GroupNorm(num_groups=min(channels // 4, 32), num_channels=channels,
+                                  eps=1e-6)
+    self.NIN_0 = NIN(channels, channels)
+    self.NIN_1 = NIN(channels, channels)
+    self.NIN_2 = NIN(channels, channels)
+    self.NIN_3 = NIN(channels, channels, init_scale=init_scale)
+    self.skip_rescale = skip_rescale
+
+  def forward(self, x):
+    B, C, H, W = x.shape
+    h = self.GroupNorm_0(x)
+    q = self.NIN_0(h)
+    k = self.NIN_1(h)
+    v = self.NIN_2(h)
+
+    w = torch.einsum('bchw,bcij->bhwij', q, k) * (int(C) ** (-0.5))
+    w = torch.reshape(w, (B, H, W, H * W))
+    w = F.softmax(w, dim=-1)
+    w = torch.reshape(w, (B, H, W, H, W))
+    h = torch.einsum('bhwij,bcij->bchw', w, v)
+    h = self.NIN_3(h)
+    return h
+
 
 class Upsample(nn.Module):
   def __init__(self, in_ch=None, out_ch=None, with_conv=False, fir=False,
