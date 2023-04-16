@@ -433,7 +433,7 @@ def sample_and_test(args):
             break
         print("PATH", path)
         suffix = '_' + args.eval_name if args.eval_name else ""
-        dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(cfg['dataset'],'ddgan', args.epoch_id, suffix)
+        dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(cfg['dataset'], args.name, args.epoch_id, suffix)
         if (args.compute_fid or args.compute_clip_score or args.compute_image_reward) and  os.path.exists(dest):
             continue
         print("Load epoch", args.epoch_id, "checkpoint")
@@ -496,7 +496,7 @@ def sample_and_test(args):
                     if args.guidance_scale:
                         fake_sample = sample_from_model_classifier_free_guidance(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, text_encoder, cond=cond, guidance_scale=args.guidance_scale)
                     else:
-                        fake_sample = sample(generator=model, x_init=x_init, cond=cond)
+                        fake_sample = sample(generator=netG, x_init=x_init, cond=cond)
                     fake_sample = to_range_0_1(fake_sample)
                
                     if args.compute_fid:
@@ -600,25 +600,25 @@ def sample_and_test(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('ddgan parameters')
     parser.add_argument('--name', type=str, default="", help="model config name")
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--seed', type=int, default=1024, help='seed used for initialization')
-    parser.add_argument('--compute_fid', action='store_true', default=False,
+    parser.add_argument('--compute-fid', action='store_true', default=False,
                             help='whether or not compute FID')
-    parser.add_argument('--compute_clip_score', action='store_true', default=False,
+    parser.add_argument('--compute-clip-score', action='store_true', default=False,
                             help='whether or not compute CLIP score')
-    parser.add_argument('--compute_image_reward', action='store_true', default=False,
+    parser.add_argument('--compute-image-reward', action='store_true', default=False,
                             help='whether or not compute CLIP score')
 
-    parser.add_argument('--clip_model', type=str,default="ViT-L/14")
-    parser.add_argument('--eval_name', type=str,default="")
-    parser.add_argument('--epoch_id', type=int,default=-1)
-    parser.add_argument('--guidance_scale', type=float,default=0)
-    parser.add_argument('--dynamic_thresholding_quantile', type=float,default=0)
-    parser.add_argument('--cond_text', type=str,default="a chair in the form of an avocado")
-    parser.add_argument('--scale_factor_h', type=int,default=1)
-    parser.add_argument('--scale_factor_w', type=int,default=1)
-    parser.add_argument('--scale_method', type=str,default="convolutional")
-    parser.add_argument('--nb_images_for_fid', type=int, default=0)
+    parser.add_argument('--clip-model', type=str,default="ViT-L/14")
+    parser.add_argument('--eval-name', type=str,default="")
+    parser.add_argument('--epoch-id', type=int,default=-1)
+    parser.add_argument('--guidance-scale', type=float,default=0)
+    parser.add_argument('--dynamic-thresholding-quantile', type=float,default=0)
+    parser.add_argument('--cond-text', type=str,default="a chair in the form of an avocado")
+    parser.add_argument('--scale-factor-h', type=int,default=1)
+    parser.add_argument('--scale-factor-w', type=int,default=1)
+    parser.add_argument('--scale-method', type=str,default="convolutional")
+    parser.add_argument('--nb-images-for-fid', type=int, default=0)
     args = parser.parse_args()
     sample_and_test(args)
     
