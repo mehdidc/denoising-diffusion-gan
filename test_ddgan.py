@@ -496,7 +496,7 @@ def sample_and_test(args):
                     if args.guidance_scale:
                         fake_sample = sample_from_model_classifier_free_guidance(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, text_encoder, cond=cond, guidance_scale=args.guidance_scale)
                     else:
-                        fake_sample = sample(generator=netG, x_init=x_init, cond=cond)
+                        fake_sample = sample(generator=netG, x_init=x_t_1, cond=cond)
                     fake_sample = to_range_0_1(fake_sample)
                
                     if args.compute_fid:
@@ -602,6 +602,9 @@ if __name__ == '__main__':
     parser.add_argument('--name', type=str, default="", help="model config name")
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--seed', type=int, default=1024, help='seed used for initialization')
+
+    # by default, we just generate samples and save them to samples.jpg
+    # for evaluation, one or several of the following should be set to True
     parser.add_argument('--compute-fid', action='store_true', default=False,
                             help='whether or not compute FID')
     parser.add_argument('--compute-clip-score', action='store_true', default=False,
@@ -609,16 +612,28 @@ if __name__ == '__main__':
     parser.add_argument('--compute-image-reward', action='store_true', default=False,
                             help='whether or not compute CLIP score')
 
+    # clip model for clip evaluation
     parser.add_argument('--clip-model', type=str,default="ViT-L/14")
+
+    # nb images to use for FID evaluation
+    parser.add_argument('--nb-images-for-fid', type=int, default=0)
+
+    # eval name to use when saving the evaluation results
     parser.add_argument('--eval-name', type=str,default="")
+
+    # epoch to use for evaluation, if -1, iterate over all epochs (for evaluation)
     parser.add_argument('--epoch-id', type=int,default=-1)
+
+
     parser.add_argument('--guidance-scale', type=float,default=0)
     parser.add_argument('--dynamic-thresholding-quantile', type=float,default=0)
-    parser.add_argument('--cond-text', type=str,default="a chair in the form of an avocado")
+
+    # either a text, or a .txt file, where each line is a prompt
     parser.add_argument('--scale-factor-h', type=int,default=1)
     parser.add_argument('--scale-factor-w', type=int,default=1)
     parser.add_argument('--scale-method', type=str,default="convolutional")
-    parser.add_argument('--nb-images-for-fid', type=int, default=0)
+    parser.add_argument('--cond-text', type=str,default="a chair in the form of an avocado")
+
     args = parser.parse_args()
     sample_and_test(args)
     
