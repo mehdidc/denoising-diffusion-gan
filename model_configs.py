@@ -10,30 +10,41 @@ def base():
             "n": 8,
         },
         "model":{
-            "dataset" :"wds",
-            "dataset_root": "/p/scratch/ccstdl/cherti1/CC12M/{00000..01099}.tar",
-            "image_size": 256,
+            "dataset": "wds",
+            "seed": 0,
+            "cross_attention": False,
             "num_channels": 3,
+            "centered": True,
+            "use_geometric": False,
+            "beta_min": 0.1,
+            "beta_max": 20.0,
             "num_channels_dae": 128,
-            "ch_mult": "1 1 2 2 4 4",
-            "num_timesteps": 4,
+            "n_mlp": 3,
+            "ch_mult": [1, 1, 2, 2, 4, 4],
             "num_res_blocks": 2,
-            "batch_size": 8,
-            "num_epoch": 1000,
-            "ngf": 64,
+            "attn_resolutions": (16,),
+            "dropout": 0.0,
+            "resamp_with_conv": True,
+            "conditional": True,
+            "fir": True,
+            "fir_kernel": [1, 3, 3, 1],
+            "skip_rescale": True,
+            "resblock_type": "biggan",
+            "progressive": "none",
+            "progressive_input": "residual",
+            "progressive_combine": "sum",
             "embedding_type": "positional",
-            "use_ema": "",
-            "ema_decay": 0.999,
-            "r1_gamma": 1.0,
+            "fourier_scale": 16.0,
+            "not_use_tanh": False,
+            "image_size": 256,
+            "nz": 100,
+            "num_timesteps": 4,
             "z_emb_dim": 256,
-            "lr_d": 1e-4,
-            "lr_g": 1.6e-4,
-            "lazy_reg": 10,
-            "save_content": "",
-            "save_ckpt_every": 1,
-            "masked_mean": "",
-            "resume": "",
-        },
+            "t_emb_dim": 256,
+            "text_encoder": "google/t5-v1_1-base",
+            "masked_mean": True,
+            "cross_attention_block": "basic",
+        }
     }
 def ddgan_cc12m_v2():
     cfg =  base()
@@ -72,7 +83,7 @@ def ddgan_cc12m_v11():
     cfg = base()
     cfg['model']['text_encoder'] = "google/t5-v1_1-large"    
     cfg['model']['classifier_free_guidance_proba'] = 0.2
-    cfg['model']['cross_attention'] = ""
+    cfg['model']['cross_attention'] = True
     return cfg
 
 def ddgan_cc12m_v12():
@@ -102,7 +113,7 @@ def ddgan_cifar10_cond17():
     cfg['model']['image_size'] = 32    
     cfg['model']['classifier_free_guidance_proba'] = 0.2
     cfg['model']['ch_mult'] = "1 2 2 2"
-    cfg['model']['cross_attention'] = ""
+    cfg['model']['cross_attention'] = True
     cfg['model']['dataset'] = "cifar10"
     cfg['model']['n_mlp'] = 4
     return cfg
@@ -276,7 +287,7 @@ def ddgan_ddb_v7():
 
 def ddgan_ddb_v9():
     cfg = ddgan_ddb_v3()
-    cfg['model']['attn_resolutions'] = '4 8 16 32'
+    cfg['model']['attn_resolutions'] = [4, 8, 16, 32]
     return cfg
 
 def ddgan_laion_aesthetic_v15():
@@ -313,6 +324,7 @@ models = [
     ddgan_cc12m_v13, # T5-XL + cross attention + classifier free guidance + random_resized_crop_v1 + cond attn
     ddgan_cc12m_v14, # T5-XL + cross attention + classifier free guidance + random_resized_crop_v1 + 300M model
     ddgan_cc12m_v15, # fine-tune v11 with --mismatch_loss and --grad_penalty_cond
+
     ddgan_laion_aesthetic_v1, # like ddgan_cc12m_v11 but fine-tuned on laion aesthetic
     ddgan_laion_aesthetic_v2, # like ddgan_laion_aesthetic_v1 but trained from scratch with the new cross attn discr
     ddgan_laion_aesthetic_v3, # like ddgan_laion_aesthetic_v1 but trained from scratch with T5-XL (continue from 23aug with mismatch and grad penalty and random_resized_crop_v1)
@@ -352,76 +364,7 @@ models = [
     ddgan_ddb_v12,
 ]
 
-def get_model(model_name):
+def get_model_config(model_name):
     for model in models:
         if model.__name__ == model_name:
-            return model()
-
-
-def test(model_name, *, cond_text="", batch_size:int=None, epoch:int=None, guidance_scale:float=0, fid=False, real_img_dir="", q=0.0, seed=0, nb_images_for_fid=0, scale_factor_h=1, scale_factor_w=1, compute_clip_score=False, eval_name="", scale_method="convolutional", compute_image_reward=False):
-
-    cfg = get_model(model_name)
-    model = cfg['model']
-    if epoch is None:
-        paths = glob('./saved_info/dd_gan/{}/{}/netG_*.pth'.format(model["dataset"], model_name))
-        epoch = max(
-            [int(os.path.basename(path).replace(".pth", "").split("_")[1]) for path in paths]
-        )
-    args = {}
-    args['exp'] = model_name
-    args['image_size'] = model['image_size']
-    args['seed'] = seed
-    args['num_channels'] = model['num_channels']
-    args['dataset'] = model['dataset']
-    args['num_channels_dae'] = model['num_channels_dae']
-    args['ch_mult'] = model['ch_mult']
-    args['num_timesteps'] = model['num_timesteps']
-    args['num_res_blocks'] = model['num_res_blocks']
-    args['batch_size'] = model['batch_size'] if batch_size is None else batch_size
-    args['epoch'] = epoch
-    args['cond_text'] = f'"{cond_text}"'
-    args['text_encoder'] = model.get("text_encoder")
-    args['cross_attention'] = model.get("cross_attention")
-    args['guidance_scale'] = guidance_scale
-    args['masked_mean'] = model.get("masked_mean")
-    args['dynamic_thresholding_quantile'] = q
-    args['scale_factor_h'] = scale_factor_h
-    args['scale_factor_w'] = scale_factor_w
-    args['n_mlp'] = model.get("n_mlp")
-    args['scale_method'] = scale_method
-    args['attn_resolutions'] = model.get("attn_resolutions", "16")
-    if fid:
-        args['compute_fid'] = ''
-        args['real_img_dir'] = real_img_dir 
-        args['nb_images_for_fid'] = nb_images_for_fid
-    if compute_clip_score:
-        args['compute_clip_score'] = ""
-    
-    if compute_image_reward:
-        args['compute_image_reward'] = ""
-    if eval_name:
-        args["eval_name"] = eval_name
-    cmd = "python -u test_ddgan.py " + " ".join(f"--{k} {v}" for k, v in args.items() if v is not None)
-    print(cmd)
-    call(cmd, shell=True)
-
-def eval_results(model_name):
-    import pandas as pd
-    rows = []
-    cfg = get_model(model_name)
-    model = cfg['model']
-    paths = glob('./saved_info/dd_gan/{}/{}/fid*.json'.format(model["dataset"], model_name))
-    for path in paths:
-        with open(path, "r") as fd:
-            data = json.load(fd)
-        row = {}
-        row['fid'] = data['fid']
-        row['epoch'] = data['epoch_id']
-        rows.append(row)
-    out = './saved_info/dd_gan/{}/{}/fid.csv'.format(model["dataset"], model_name)
-    df = pd.DataFrame(rows)
-    df.to_csv(out, index=False)
-
-if __name__ == "__main__":
-    from clize import run
-    run([test, eval_results])
+            return model()['model']

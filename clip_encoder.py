@@ -16,7 +16,7 @@ class CLIPEncoder(nn.Module):
         self.model, _, _ = open_clip.create_model_and_transforms(model, pretrained=pretrained)
         self.output_size = self.model.transformer.width
 
-    def forward(self, texts, return_only_pooled=True):
+    def forward(self, texts, return_only_pooled=False):
         device = next(self.parameters()).device
         toks = open_clip.tokenize(texts).to(device)
         x = self.model.token_embedding(toks)  # [batch_size, n_ctx, d_model]

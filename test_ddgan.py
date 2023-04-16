@@ -11,8 +11,32 @@ import time
 import os
 import json
 import torchvision
+import random
+
 from score_sde.models.ncsnpp_generator_adagn import NCSNpp
+from torch.nn.functional import adaptive_avg_pool2d
+
+try:
+    from pytorch_fid.fid_score import calculate_activation_statistics, calculate_fid_given_paths, ImagePathDataset, compute_statistics_of_path, calculate_frechet_distance
+    from pytorch_fid.inception import InceptionV3
+except ImportError:
+    pass
+
+try:
+    import ImageReward as RM
+except ImportError:
+    pass
+
+
+try:
+    import clip
+except ImportError:
+    pass
+
 from encoder import build_encoder
+from clip_encoder import CLIPImageEncoder
+
+from model_configs import get_model_config
 
 #%% Diffusion coefficients 
 def var_func_vp(t, beta_min, beta_max):
@@ -137,6 +161,12 @@ def sample_from_model(coefficients, generator, n_time, x_init, T, opt, cond=None
         
     return x
 
+
+def sample(generator, x_init, cond=None):
+    return sample_from_model(
+        generator.pos_coeff, generator, n_time=generator.config.num_timesteps, x_init=x_init, 
+        T=generator.time_schedule, opt=generator.config, cond=cond
+    )
 
 def sample_from_model_classifier_free_guidance(coefficients, generator, n_time, x_init, T, opt, text_encoder, cond=None, guidance_scale=0):
     x = x_init
@@ -353,106 +383,84 @@ def get_fold_unfold(x, kernel_size, stride, split_input_params, uf=1, df=1):  # 
 
     return fold, unfold, normalization, weighting
 
+class ObjectFromDict:
+    def __init__(self, d):
+        self.__dict__ = d
+
+def load_model(config, path, device="cpu"):
+    config = ObjectFromDict(config)
+    text_encoder = build_encoder(name=config.text_encoder, masked_mean=config.masked_mean)
+    config.cond_size = text_encoder.output_size
+    netG = NCSNpp(config)
+    ckpt = torch.load(path, map_location="cpu")
+    for key in list(ckpt.keys()):
+        if key.startswith("module"):
+            ckpt[key[7:]] = ckpt.pop(key)
+    netG.load_state_dict(ckpt)
+    netG.eval()
+    netG.pos_coeff = Posterior_Coefficients(config, device)
+    netG.text_encoder = text_encoder
+    netG.config = config
+    netG.time_schedule = get_time_schedule(config, device)
+    netG = netG.to(device)
+    return netG
 
 
 #%%
+
+
 def sample_and_test(args):
     torch.manual_seed(args.seed)
-
-    device = 'cuda:0'
-    text_encoder  =build_encoder(name=args.text_encoder, masked_mean=args.masked_mean).to(device)
-    args.cond_size = text_encoder.output_size
-    if args.dataset == 'cifar10':
-        real_img_dir = 'pytorch_fid/cifar10_train_stat.npy'
-    elif args.dataset == 'celeba_256':
-        real_img_dir = 'pytorch_fid/celeba_256_stat.npy'
-    elif args.dataset == 'lsun':
-        real_img_dir = 'pytorch_fid/lsun_church_stat.npy'
-    else:
-        real_img_dir = args.real_img_dir
-    
-    to_range_0_1 = lambda x: (x + 1.) / 2.
-
-    print(vars(args)) 
-    netG = NCSNpp(args).to(device)
-     
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    to_range_0_1 = lambda x: (x + 1.) / 2.     
     if args.epoch_id == -1:
         epochs = range(1000)
     else:
         epochs = [args.epoch_id]
     if args.compute_image_reward:
-        import ImageReward as RM
         #image_reward = RM.load("ImageReward-v1.0", download_root=".").to(device)
         image_reward = RM.load("ImageReward.pt", download_root=".").to(device)
-
+    cfg = get_model_config(args.name)
     for epoch in epochs:
         args.epoch_id = epoch
-        path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(args.dataset, args.exp, args.epoch_id)
-        next_next_path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(args.dataset, args.exp, args.epoch_id+2)
+
+        path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(cfg['dataset'], args.name, args.epoch_id)
+        next_next_path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(cfg['dataset'], args.name, args.epoch_id+2)
+        print(path)
         if not os.path.exists(path):
             continue
         if not os.path.exists(next_next_path):
             break
         print("PATH", path)
-
-        #if not os.path.exists(next_path):
-        #    print(f"STOP at {epoch}")
-        #    break
-        try:
-            ckpt = torch.load(path, map_location=device)
-        except Exception:
-            continue
         suffix = '_' + args.eval_name if args.eval_name else ""
-        dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(args.dataset, args.exp, args.epoch_id, suffix)
+        dest = './saved_info/dd_gan/{}/{}/eval_{}{}.json'.format(cfg['dataset'],'ddgan', args.epoch_id, suffix)
         if (args.compute_fid or args.compute_clip_score or args.compute_image_reward) and  os.path.exists(dest):
             continue
-        print("Eval Epoch", args.epoch_id)
-        #loading weights from ddp in single gpu
-        #print(ckpt.keys())
-        for key in list(ckpt.keys()):
-            if key.startswith("module"):
-                ckpt[key[7:]] = ckpt.pop(key)
-        netG.load_state_dict(ckpt)
-        netG.eval()
-        
-        
-        T = get_time_schedule(args, device)
-        
-        pos_coeff = Posterior_Coefficients(args, device)
-            
-        
-        save_dir = "./generated_samples/{}".format(args.dataset)
+        print("Load epoch", args.epoch_id, "checkpoint")
+
+        netG = load_model(cfg, path, device=device)
+        save_dir = "./generated_samples/{}".format(cfg['dataset'])
         
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
         
 
         if args.compute_fid or args.compute_clip_score or args.compute_image_reward:
-            from torch.nn.functional import adaptive_avg_pool2d
-            from pytorch_fid.fid_score import calculate_activation_statistics, calculate_fid_given_paths, ImagePathDataset, compute_statistics_of_path, calculate_frechet_distance
-            from pytorch_fid.inception import InceptionV3
-            import random
+            # Evaluate
             random.seed(args.seed)
             texts = open(args.cond_text).readlines()
             texts = [t.strip() for t in texts]
             if args.nb_images_for_fid:
                 random.shuffle(texts)
                 texts = texts[0:args.nb_images_for_fid]
-            #iters_needed = len(texts) // args.batch_size
-            #texts = list(map(lambda s:s.strip(), texts))
-            #ntimes = max(30000 // len(texts), 1)
-            #texts = texts * ntimes
             print("Text size:", len(texts))
-            #print("Iters:", iters_needed)
             i = 0
-
             if args.compute_fid:
                 dims = 2048
                 block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
                 inceptionv3 = InceptionV3([block_idx]).to(device)
 
             if args.compute_clip_score:
-                import clip
                 CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073]
                 CLIP_STD = [0.26862954, 0.26130258, 0.27577711]
                 clip_model, preprocess = clip.load(args.clip_model, device)
@@ -481,14 +489,14 @@ def sample_and_test(args):
             for b in range(0, len(texts), args.batch_size):
                 text = texts[b:b+args.batch_size]
                 with torch.no_grad():
-                    cond = text_encoder(text, return_only_pooled=False)
+                    cond = netG.text_encoder(text)
                     bs = len(text)
                     t0 = time.time()
-                    x_t_1 = torch.randn(bs, args.num_channels,args.image_size, args.image_size).to(device)
+                    x_t_1 = torch.randn(bs, cfg['num_channels'], cfg['image_size'], cfg['image_size']).to(device)
                     if args.guidance_scale:
                         fake_sample = sample_from_model_classifier_free_guidance(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, text_encoder, cond=cond, guidance_scale=args.guidance_scale)
                     else:
-                        fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, cond=cond)
+                        fake_sample = sample(generator=model, x_init=x_init, cond=cond)
                     fake_sample = to_range_0_1(fake_sample)
                
                     if args.compute_fid:
@@ -513,8 +521,8 @@ def sample_and_test(args):
                             clip_scores.append(((imf * txtf).sum(dim=1)).cpu())
 
                     if args.compute_image_reward:
-                        for k, sample in enumerate(fake_sample):
-                            img = sample.cpu().numpy().transpose(1,2,0)
+                        for k, img in enumerate(fake_sample):
+                            img = img.cpu().numpy().transpose(1,2,0)
                             img = img * 255
                             img = img.astype(np.uint8)
                             text_k = text[k]
@@ -542,7 +550,8 @@ def sample_and_test(args):
             with open(dest, "w") as fd:
                 json.dump(results, fd)
             print(results)
-        else:            
+        else:        
+            # just generate some samples
             if args.cond_text.endswith(".txt"):
                 texts = open(args.cond_text).readlines()
                 texts = [t.strip() for t in texts]
@@ -550,7 +559,6 @@ def sample_and_test(args):
                 texts = [args.cond_text] * args.batch_size
             clip_guidance = False
             if clip_guidance:
-                from clip_encoder import CLIPImageEncoder
                 cond = text_encoder(texts, return_only_pooled=False)
                 clip_image_model = CLIPImageEncoder().to(device)
                 x_t_1 = torch.randn(len(texts), args.num_channels,args.image_size*args.scale_factor_h, args.image_size*args.scale_factor_w).to(device)
@@ -559,14 +567,14 @@ def sample_and_test(args):
                 torchvision.utils.save_image(fake_sample, './samples_{}.jpg'.format(args.dataset))
 
             else:
-                cond = text_encoder(texts, return_only_pooled=False)
-                x_t_1 = torch.randn(len(texts), args.num_channels,args.image_size*args.scale_factor_h, args.image_size*args.scale_factor_w).to(device)
+                cond = netG.text_encoder(texts)
+                x_t_1 = torch.randn(len(texts), cfg['num_channels'], cfg['image_size'] * args.scale_factor_h, cfg['image_size'] * args.scale_factor_w).to(device)
                 t0 = time.time()
                 if args.guidance_scale:
                     if args.scale_factor_h > 1 or args.scale_factor_w > 1:
                         if args.scale_method == "convolutional":
                             split_input_params = {
-                                "ks": (args.image_size, args.image_size),
+                                "ks": (cfg['image_size'], cfg['image_size']),
                                 "stride": (150,  150),
                                 "clip_max_tie_weight": 0.5,
                                 "clip_min_tie_weight": 0.01,
@@ -583,22 +591,17 @@ def sample_and_test(args):
                     else:
                         fake_sample = sample_from_model_classifier_free_guidance(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, text_encoder, cond=cond, guidance_scale=args.guidance_scale)
                 else:
-                    fake_sample = sample_from_model(pos_coeff, netG, args.num_timesteps, x_t_1,T,  args, cond=cond)
+                    fake_sample = sample(generator=netG, x_init=x_t_1, cond=cond)
 
                 print(time.time() - t0)
                 fake_sample = to_range_0_1(fake_sample)
-                torchvision.utils.save_image(fake_sample, './samples_{}.jpg'.format(args.dataset))
-
-
-
-    
-    
-            
+                torchvision.utils.save_image(fake_sample, 'samples.jpg')            
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('ddgan parameters')
-    parser.add_argument('--seed', type=int, default=1024,
-                        help='seed used for initialization')
+    parser.add_argument('--name', type=str, default="", help="model config name")
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--seed', type=int, default=1024, help='seed used for initialization')
     parser.add_argument('--compute_fid', action='store_true', default=False,
                             help='whether or not compute FID')
     parser.add_argument('--compute_clip_score', action='store_true', default=False,
@@ -608,92 +611,15 @@ if __name__ == '__main__':
 
     parser.add_argument('--clip_model', type=str,default="ViT-L/14")
     parser.add_argument('--eval_name', type=str,default="")
-
-    parser.add_argument('--epoch_id', type=int,default=1000)
+    parser.add_argument('--epoch_id', type=int,default=-1)
     parser.add_argument('--guidance_scale', type=float,default=0)
     parser.add_argument('--dynamic_thresholding_quantile', type=float,default=0)
-    parser.add_argument('--cond_text', type=str,default="0")
+    parser.add_argument('--cond_text', type=str,default="a chair in the form of an avocado")
     parser.add_argument('--scale_factor_h', type=int,default=1)
     parser.add_argument('--scale_factor_w', type=int,default=1)
     parser.add_argument('--scale_method', type=str,default="convolutional")
-
-    parser.add_argument('--cross_attention', action='store_true',default=False)
-
-    
-    parser.add_argument('--num_channels', type=int, default=3,
-                            help='channel of image')
-    parser.add_argument('--centered', action='store_false', default=True,
-                            help='-1,1 scale')
-    parser.add_argument('--use_geometric', action='store_true',default=False)
-    parser.add_argument('--beta_min', type=float, default= 0.1,
-                            help='beta_min for diffusion')
-    parser.add_argument('--beta_max', type=float, default=20.,
-                            help='beta_max for diffusion')
-    
-    
-    parser.add_argument('--num_channels_dae', type=int, default=128,
-                            help='number of initial channels in denosing model')
-    parser.add_argument('--n_mlp', type=int, default=3,
-                            help='number of mlp layers for z')
-    parser.add_argument('--ch_mult', nargs='+', type=int,
-                            help='channel multiplier')
-
-    parser.add_argument('--num_res_blocks', type=int, default=2,
-                            help='number of resnet blocks per scale')
-    parser.add_argument('--attn_resolutions', default=(16,), nargs='+', type=int,
-                            help='resolution of applying attention')
-    parser.add_argument('--dropout', type=float, default=0.,
-                            help='drop-out rate')
-    parser.add_argument('--resamp_with_conv', action='store_false', default=True,
-                            help='always up/down sampling with conv')
-    parser.add_argument('--conditional', action='store_false', default=True,
-                            help='noise conditional')
-    parser.add_argument('--fir', action='store_false', default=True,
-                            help='FIR')
-    parser.add_argument('--fir_kernel', default=[1, 3, 3, 1],
-                            help='FIR kernel')
-    parser.add_argument('--skip_rescale', action='store_false', default=True,
-                            help='skip rescale')
-    parser.add_argument('--resblock_type', default='biggan',
-                            help='tyle of resnet block, choice in biggan and ddpm')
-    parser.add_argument('--progressive', type=str, default='none', choices=['none', 'output_skip', 'residual'],
-                            help='progressive type for output')
-    parser.add_argument('--progressive_input', type=str, default='residual', choices=['none', 'input_skip', 'residual'],
-                        help='progressive type for input')
-    parser.add_argument('--progressive_combine', type=str, default='sum', choices=['sum', 'cat'],
-                        help='progressive combine method.')
-
-    parser.add_argument('--embedding_type', type=str, default='positional', choices=['positional', 'fourier'],
-                        help='type of time embedding')
-    parser.add_argument('--fourier_scale', type=float, default=16.,
-                            help='scale of fourier transform')
-    parser.add_argument('--not_use_tanh', action='store_true',default=False)
-    
-    #geenrator and training
-    parser.add_argument('--exp', default='experiment_cifar_default', help='name of experiment')
-    parser.add_argument('--real_img_dir', default='./pytorch_fid/cifar10_train_stat.npy', help='directory to real images for FID computation')
-
-    parser.add_argument('--dataset', default='cifar10', help='name of dataset')
-    parser.add_argument('--image_size', type=int, default=32,
-                            help='size of image')
-
-    parser.add_argument('--nz', type=int, default=100)
-    parser.add_argument('--num_timesteps', type=int, default=4)
-    
-    
-    parser.add_argument('--z_emb_dim', type=int, default=256)
-    parser.add_argument('--t_emb_dim', type=int, default=256)
-    parser.add_argument('--batch_size', type=int, default=200, help='sample generating batch size')
-    parser.add_argument('--text_encoder', type=str, default="google/t5-v1_1-base")
-    parser.add_argument('--masked_mean', action='store_true',default=False)
     parser.add_argument('--nb_images_for_fid', type=int, default=0)
-
-
-
-
-   
     args = parser.parse_args()
-    
     sample_and_test(args)
     
    
