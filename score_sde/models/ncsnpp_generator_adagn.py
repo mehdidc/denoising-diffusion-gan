@@ -379,7 +379,8 @@ class NCSNpp(nn.Module):
         #print(hs[-1].shape, temb.shape, zemb.shape, type(modules[m_idx]))
         h = modules[m_idx](hs[-1], temb, zemb)
         m_idx += 1
-        if h.shape[-1] in self.attn_resolutions:
+        if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock, layers.AttnBlock):
+        #if h.shape[-1] in self.attn_resolutions:
           if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock):
             h = modules[m_idx](h, cond, cond_mask)
           else:
@@ -415,6 +416,7 @@ class NCSNpp(nn.Module):
     h = hs[-1]
     h = modules[m_idx](h, temb, zemb)
     m_idx += 1
+    
     if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock):
       h = modules[m_idx](h, cond, cond_mask)
     else:
@@ -431,7 +433,8 @@ class NCSNpp(nn.Module):
         h = modules[m_idx](torch.cat([h, hs.pop()], dim=1), temb, zemb)
         m_idx += 1
 
-      if h.shape[-1] in self.attn_resolutions:
+      #if h.shape[-1] in self.attn_resolutions:
+      if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock, layers.AttnBlock):
         if type(modules[m_idx]) in (layers.CondAttnBlock, CrossAndGlobalAttnBlock):
           h = modules[m_idx](h, cond, cond_mask)
         else:
