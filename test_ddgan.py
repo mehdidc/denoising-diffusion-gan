@@ -425,11 +425,11 @@ def sample_and_test(args):
         args.epoch_id = epoch
 
         path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(cfg['dataset'], args.name, args.epoch_id)
-        next_next_path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(cfg['dataset'], args.name, args.epoch_id+2)
+        next_path = './saved_info/dd_gan/{}/{}/netG_{}.pth'.format(cfg['dataset'], args.name, args.epoch_id+1)
         print(path)
         if not os.path.exists(path):
             continue
-        if not os.path.exists(next_next_path):
+        if not os.path.exists(next_path):
             break
         print("PATH", path)
         suffix = '_' + args.eval_name if args.eval_name else ""
